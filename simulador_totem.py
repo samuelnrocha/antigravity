@@ -1,20 +1,3 @@
-import oracledb
-import random
-import time
-from datetime import datetime
-
-# --- CONFIGURAÇÃO ORACLE ---
-# Preencha com suas credenciais da nuvem
-ORACLE_USER = "rm568552"
-ORACLE_PASS = "090505"
-# O DSN geralmente parece com: "host:port/service_name"
-ORACLE_DSN  = "oracle.fiap.com.br:1521/orcl" 
-
-def conectar_oracle():
-    """Cria e retorna uma conexão com o banco Oracle."""
-    try:
-        conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASS, dsn=ORACLE_DSN)
-        return conn
     except Exception as e:
         print(f"[ERRO] Falha ao conectar no Oracle: {e}")
         return None

@@ -1,3 +1,5 @@
+oracledb
 pandas
 streamlit
+python-dotenv
 oracledb

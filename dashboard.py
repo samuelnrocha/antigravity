@@ -1,18 +1,3 @@
-import streamlit as st
-import oracledb
-import pandas as pd
-import time
-
-# --- CREDENCIAIS (Devem ser iguais ao simulador) ---
-ORACLE_USER = "rm568552"
-ORACLE_PASS = "090505"
-ORACLE_DSN  = "oracle.fiap.com.br:1521/orcl"
-
-st.set_page_config(page_title="Monitoramento Oracle", layout="wide")
-
-def carregar_dados_oracle():
-    """Conecta no Oracle e baixa os dados."""
-    try:
         conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASS, dsn=ORACLE_DSN)
         
         # Oracle não suporta 'LIMIT', usa 'FETCH FIRST' ou ROWNUM.
