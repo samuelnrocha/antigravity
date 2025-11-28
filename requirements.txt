@@ -1,5 +1,5 @@
-oracledb
-pandas
 streamlit
-python-dotenv
+scikit-learn
+matplotlib
 oracledb
+python-dotenv
