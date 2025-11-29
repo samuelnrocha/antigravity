@@ -5,12 +5,13 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# --- CONFIGURAÇÃO ---
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
-# Debug
+# --- VERSÃO 3: Adicionando Comandos e Latência ---
+TABLE_NAME = "FLEXMEDIA_LIVE_V3"
+
 db_type = os.getenv("DB_TYPE", "sqlite")
 print(f"--- [CONFIG] Banco definido como: {db_type.upper()} ---")
 
@@ -19,7 +20,6 @@ try:
     ORACLE_AVAILABLE = True
 except ImportError:
     ORACLE_AVAILABLE = False
-    print("--- [AVISO] 'oracledb' não instalado. ---")
 
 DB_SQLITE_PATH = BASE_DIR / "data" / "processed" / "flexmedia.db"
 
@@ -34,45 +34,62 @@ class DBConnector:
         if self.driver == "sqlite":
             os.makedirs(os.path.dirname(DB_SQLITE_PATH), exist_ok=True)
             return sqlite3.connect(str(DB_SQLITE_PATH))
-        
         elif self.driver == "oracle":
-            if not ORACLE_AVAILABLE:
-                raise Exception("Biblioteca 'oracledb' necessária.")
-            
+            if not ORACLE_AVAILABLE: raise Exception("Biblioteca 'oracledb' necessária.")
             user = os.getenv("ORACLE_USER")
             password = os.getenv("ORACLE_PASS")
             dsn = os.getenv("ORACLE_DSN")
-            
-            if not (user and password and dsn):
-                raise Exception("Credenciais Oracle incompletas no .env")
-                
             return oracledb.connect(user=user, password=password, dsn=dsn)
         
     def init_db(self):
-        """Cria tabela no SQLite com novos campos."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Schema V3: Adicionado acao, latencia e status
         if self.driver == "sqlite":
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            # Adicionado campo 'tempo_permanencia'
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS interacoes (
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT,
                     id_sensor TEXT,
                     tempo_permanencia REAL,
                     tempo_interacao REAL,
+                    acao_usuario TEXT,
+                    tempo_resposta_ms INTEGER,
+                    status_sistema TEXT,
                     tipo_interacao TEXT
                 )
             ''')
-            conn.commit()
-            conn.close()
+        
+        elif self.driver == "oracle":
+            try:
+                # Criação segura no Oracle
+                sql_create = f"""
+                    CREATE TABLE {TABLE_NAME} (
+                        id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                        timestamp DATE DEFAULT SYSDATE,
+                        id_sensor VARCHAR2(50),
+                        tempo_permanencia NUMBER(10,2),
+                        tempo_interacao NUMBER(10,2),
+                        acao_usuario VARCHAR2(50),
+                        tempo_resposta_ms NUMBER(10),
+                        status_sistema VARCHAR2(20),
+                        tipo_interacao VARCHAR2(50)
+                    )
+                """
+                cursor.execute(sql_create)
+                print(f"✅ Tabela {TABLE_NAME} criada no Oracle.")
+            except Exception:
+                pass
+
+        conn.commit()
+        conn.close()
     
     def contar_total(self):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            table = "interacoes" if self.driver == "sqlite" else "interacoes_totem"
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            cursor.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
             total = cursor.fetchone()[0]
             conn.close()
             return total
@@ -84,20 +101,25 @@ class DBConnector:
             conn = self.get_connection()
             cursor = conn.cursor()
             
+            # Preparando dados (Fallback para None se não houver ação)
+            acao = dados.get('acao_usuario', 'Nenhuma')
+            latencia = dados.get('tempo_resposta_ms', 0)
+            status = dados.get('status_sistema', 'N/A')
+
             if self.driver == "sqlite":
-                cursor.execute('''
-                    INSERT INTO interacoes (timestamp, id_sensor, tempo_permanencia, tempo_interacao, tipo_interacao)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (dados['timestamp'], dados['id_sensor'], dados['tempo_permanencia'], dados['tempo_interacao'], dados['tipo_interacao']))
+                cursor.execute(f'''
+                    INSERT INTO {TABLE_NAME} 
+                    (timestamp, id_sensor, tempo_permanencia, tempo_interacao, acao_usuario, tempo_resposta_ms, status_sistema, tipo_interacao)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (dados['timestamp'], dados['id_sensor'], dados['tempo_permanencia'], dados['tempo_interacao'], acao, latencia, status, dados['tipo_interacao']))
             
             elif self.driver == "oracle":
-                # Mapeamento para Oracle (Assumindo colunas criadas)
-                # Vamos usar: VALOR = tempo_interacao, e vamos precisar criar uma nova coluna TEMPO_PERMANENCIA no Oracle via script ou o hotfix do simulador
-                sql = """
-                    INSERT INTO interacoes_totem (id_sensor, tempo_permanencia, valor, tipo_interacao)
-                    VALUES (:1, :2, :3, :4) 
+                sql = f"""
+                    INSERT INTO {TABLE_NAME} 
+                    (id_sensor, tempo_permanencia, tempo_interacao, acao_usuario, tempo_resposta_ms, status_sistema, tipo_interacao)
+                    VALUES (:1, :2, :3, :4, :5, :6, :7) 
                 """
-                cursor.execute(sql, (dados['id_sensor'], dados['tempo_permanencia'], dados['tempo_interacao'], dados['tipo_interacao']))
+                cursor.execute(sql, (dados['id_sensor'], dados['tempo_permanencia'], dados['tempo_interacao'], acao, latencia, status, dados['tipo_interacao']))
 
             conn.commit()
             conn.close()
@@ -105,24 +127,37 @@ class DBConnector:
             print(f"[ERRO AO SALVAR] {e}")
 
     def ler_dados(self, limit=50):
-        try:
-            conn = self.get_connection()
-            if self.driver == "sqlite":
-                query = f"SELECT * FROM interacoes ORDER BY id DESC LIMIT {limit}"
-            else:
-                # Alias para padronizar o DataFrame
-                query = f"""
-                    SELECT id, timestamp, id_sensor, 
-                           tempo_permanencia, 
-                           valor as tempo_interacao, 
-                           tipo_interacao 
-                    FROM interacoes_totem 
-                    ORDER BY id DESC 
-                    FETCH FIRST {limit} ROWS ONLY
-                """
-            df = pd.read_sql(query, conn)
-            df.columns = df.columns.str.lower()
-            conn.close()
-            return df
-        except Exception:
-            return pd.DataFrame()
+            try:
+                conn = self.get_connection()
+                if self.driver == "sqlite":
+                    query = f"SELECT * FROM {TABLE_NAME} ORDER BY id DESC LIMIT {limit}"
+                else:
+                    query = f"""
+                        SELECT id, timestamp, id_sensor, 
+                            tempo_permanencia, 
+                            tempo_interacao,
+                            acao_usuario,
+                            tempo_resposta_ms,
+                            status_sistema,
+                            tipo_interacao 
+                        FROM {TABLE_NAME} 
+                        ORDER BY id DESC 
+                        FETCH FIRST {limit} ROWS ONLY
+                    """
+                df = pd.read_sql(query, conn)
+                df.columns = df.columns.str.lower()
+                conn.close()
+
+                # --- LIMPEZA DE DADOS (DATA CLEANING) ---
+                if not df.empty:
+                    # 1. Remove duplicatas exatas (caso o sensor tenha enviado 2x)
+                    # Ignoramos a coluna 'id' pois ela é sempre única no banco
+                    subset_cols = [c for c in df.columns if c != 'id']
+                    duplicadas = df.duplicated(subset=subset_cols).sum()
+                    if duplicadas > 0:
+                        df = df.drop_duplicates(subset=subset_cols)
+                        # print(f"🧹 Limpeza: {duplicadas} registros duplicados removidos.")
+
+                return df
+            except Exception:
+                return pd.DataFrame()

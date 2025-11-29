@@ -6,84 +6,80 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from src.database.connector import DBConnector
 
-def gerar_dados_inteligentes():
+from src.database.connector import DBConnector
+from src.core.schemas import InteracaoSchema # Importa o Validador
+from pydantic import ValidationError
+
+def gerar_dados_complexos():
     sensores = ["totem_entrada", "totem_praca", "quiosque_food"]
+    acoes = ["ver_mapa", "cardapio", "promo_dia", "chamar_ajuda", "scan_qr"]
+    
     sensor = random.choice(sensores)
+    tempo_permanencia = round(random.uniform(3.0, 90.0), 2)
     
-    # 1. Simula Sensor de Presença (Ultrassônico/ESP32-CAM)
-    # A pessoa ficou entre 5s e 2 minutos na frente do totem
-    tempo_permanencia = round(random.uniform(5.0, 120.0), 2)
-    
-    # 2. Simula Sensor de Toque (Capacitivo)
-    # 60% de chance da pessoa interagir se ela parou
-    interagiu = random.choice([True, False, True]) # 66% chance
+    # Lógica de Interação
+    interagiu = random.choice([True, False, True])
     
     if interagiu:
-        # O tempo de toque é sempre MENOR que o tempo de presença
-        fator = random.uniform(0.1, 0.9)
+        fator = random.uniform(0.2, 0.8)
         tempo_interacao = round(tempo_permanencia * fator, 2)
+        acao_usuario = random.choice(acoes)
+        tempo_resposta_ms = random.randint(20, 2500) if sensor == "totem_praca" else random.randint(20, 500)
+        status_sistema = "SUCESSO" if random.random() > 0.05 else "ERRO_TIMEOUT"
         
-        # Classificação para o ML
-        if tempo_interacao > 20:
-            tipo = "Engajado"
-        elif tempo_interacao > 5:
-            tipo = "Normal"
-        else:
-            tipo = "Curioso"
+        if tempo_interacao > 30: tipo = "Engajado"
+        elif tempo_interacao > 10: tipo = "Normal"
+        else: tipo = "Explorador"
     else:
         tempo_interacao = 0.0
-        tipo = "Ocioso" # Apenas olhou e saiu
+        acao_usuario = "Nenhuma"
+        tempo_resposta_ms = 0
+        status_sistema = "N/A"
+        tipo = "Ocioso"
     
-    return {
+    # Dados Brutos (Dicionário)
+    raw_data = {
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "id_sensor": sensor,
         "tempo_permanencia": tempo_permanencia,
         "tempo_interacao": tempo_interacao,
-        "tipo_interacao": tipo
+        "tipo_interacao": tipo,
+        "acao_usuario": acao_usuario,
+        "tempo_resposta_ms": tempo_resposta_ms,
+        "status_sistema": status_sistema
     }
 
-def hotfix_schema_oracle(db):
-    """Garante que a tabela Oracle tenha as colunas novas."""
-    if db.driver == 'oracle':
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        print("🔧 Verificando Schema do Oracle...")
-        
-        # 1. Ajustar 'valor' (Interação)
-        try:
-            cursor.execute("ALTER TABLE interacoes_totem MODIFY (valor NUMBER(10,2))")
-        except: pass
-        
-        # 2. Criar 'tempo_permanencia'
-        try:
-            cursor.execute("ALTER TABLE interacoes_totem ADD (tempo_permanencia NUMBER(10,2) DEFAULT 0)")
-            print("✅ Coluna 'TEMPO_PERMANENCIA' adicionada no Oracle.")
-        except Exception as e:
-            # Se já existir (ORA-01430), ignoramos
-            pass
-            
-        conn.commit()
-        conn.close()
+    # --- A MÁGICA DA VALIDAÇÃO ---
+    # Transformamos o dict bruto no Schema Validado.
+    # Se houver erro, ele lança exceção e não retorna dado sujo.
+    try:
+        dado_limpo = InteracaoSchema(**raw_data)
+        # Retorna o dicionário limpo e padronizado pelo Pydantic
+        return dado_limpo.model_dump() 
+    except ValidationError as e:
+        print(f"❌ DADO RECUSADO PELO VALIDADOR: {e}")
+        return None
 
 if __name__ == "__main__":
     db = DBConnector()
     db.init_db()
     
-    # # Tenta ajustar o Oracle se necessário
-    # if db.driver == 'oracle':
-    #     hotfix_schema_oracle(db)
-    
-    print(f"--- 📡 Simulador Multi-Sensor Iniciado ({db.driver.upper()}) ---")
-    print("Gerando dados de Presença (ESP32-CAM) + Toque (ESP32)...")
+    print(f"--- 📡 Simulador Enterprise (Validado) Iniciado ---")
     
     try:
         while True:
-            dado = gerar_dados_inteligentes()
-            db.salvar_interacao(dado)
+            dado_validado = gerar_dados_complexos()
             
-            print(f"[{dado['id_sensor']}] Presença: {dado['tempo_permanencia']}s | Toque: {dado['tempo_interacao']}s -> {dado['tipo_interacao']}")
+            if dado_validado:
+                # O banco só recebe se passou pelo Pydantic
+                db.salvar_interacao(dado_validado)
+                
+                if dado_validado['tempo_interacao'] > 0:
+                    print(f"✅ [{dado_validado['id_sensor']}] Validado & Salvo: {dado_validado['acao_usuario']}")
+                else:
+                    print(f"💤 [{dado_validado['id_sensor']}] Ocioso (Validado)")
+            
             time.sleep(2)
     except KeyboardInterrupt:
         print("\nSimulação parada.")
